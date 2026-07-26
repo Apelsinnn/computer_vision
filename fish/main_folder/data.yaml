@@ -1,0 +1,7 @@
+path: D:\My_folder\datasets\ready_to_train\datasets_3
+train: images/train
+val: images/val
+test: images/test
+
+nc: 1
+names: ["float_above_water"]

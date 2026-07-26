@@ -1,0 +1,8 @@
+.venv/
+my_old_dataset/
+runs/
+yolo26m_ncnn_model/
+benchmarks.log
+calibration_image_sample_data_20x128x128x3_float32.npy
+fish/main_folder/models/
+fish/main_folder/runs/
