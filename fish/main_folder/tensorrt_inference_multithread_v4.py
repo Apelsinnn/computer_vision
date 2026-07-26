@@ -284,3 +284,4 @@ model_engine_path = (r"C:\py_projects\albic\fish\main_folder\runs\detect"
 
 detector = TensorRTDetector(engine_path=model_engine_path)
 detector.live_detection()
+
