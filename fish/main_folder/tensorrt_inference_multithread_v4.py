@@ -1,17 +1,20 @@
 import cv2
 import time
 import torch
-import dxcam
 import numpy as np
 import tensorrt
+from dxcam import create
+from typing import TYPE_CHECKING, Optional
 
 from dataclasses import dataclass
-from threading import Thread
+from threading import Thread, Event
 
 from fish.main_folder.image_converter_v2 import ImageConverter
 
-print("=" * 200)
+if TYPE_CHECKING:
+    from dxcam import DXCamera
 
+print("=" * 200)
 
 @dataclass(slots=True)
 class PreprocessedFrame:
@@ -28,137 +31,27 @@ class TensorRTDetector:
     """Пайплайн детекции изображений для модели TensorRT в реальном времени."""
 
     def __init__(self, engine_path: str):
-        self._engine_path = engine_path
-        self._running = False
-        self._camera = None
-        self._execution_contexts = None
-        self._device_input_buffers = None
-        self._device_output_buffers = None
-        self._cuda_streams = None
-        self._captured_frame = None
-        self._preprocessed_frame = None
-        self._inference_data = PredictionResult()
-        self._fps = None
-        self._converter = None
-        self._host_input_buffers = None
-
-    def _capture_loop(self):
-        """Получает кадры с экрана."""
-        while self._running:
-            frame = self._camera.grab()
-            # frame = self.camera.get_latest_frame()
-
-            if frame is None:
-                continue
-
-            self._captured_frame = frame
-
-    def _preprocess_loop(self):
-        """Подготавливает кадры к входному формату модели."""
-        while self._captured_frame is None:
-            print("Ожидание первого кадра!")
-            time.sleep(0.2)
-
-        while self._running:
-            frame = self._captured_frame.copy() # type: ignore
-            # t0 = time.perf_counter() # подумать над уменьшением байткода, потестить
-            img = self._converter.letterbox(frame)
-            img = img.astype(np.float32)
-            img = img / 255.0
-            img = np.transpose(img, (2, 0, 1))
-            img = np.expand_dims(img, axis=0)
-            # print(f"{(time.perf_counter() - t0) * 1000:.2f}ms")
-            self._preprocessed_frame = PreprocessedFrame(frame=frame, batch=img)
-
-    def _inference_loop(self):
-        """Находит объекты на кадре."""
-        prev_time = 2
-        buffer_index = 0
-
-        while self._preprocessed_frame is None:
-            print("Ожидание обработанного кадра!")
-            time.sleep(0.4)
-
-        while self._running:
-            t0 = time.perf_counter()
-            buffer_index = (buffer_index + 1) % 2
-            previous_index = 1 - buffer_index
-            frame, batch = self._preprocessed_frame.frame, self._preprocessed_frame.batch # type: ignore
-
-            self._cuda_events[buffer_index].synchronize()
-            np.copyto(self._host_input_buffers[buffer_index].numpy(), batch)
-            self._device_input_buffers[buffer_index].copy_(
-                self._host_input_buffers[buffer_index],
-                non_blocking=True
-            )
-
-            with torch.cuda.stream(self._cuda_streams[buffer_index]):
-                self._execution_contexts[buffer_index].execute_async_v3(
-                    self._cuda_streams[buffer_index].cuda_stream
-                )
-                self._cuda_events[buffer_index].record(self._cuda_streams[buffer_index])
-
-            self._cuda_events[previous_index].synchronize()
-            outputs = self._device_output_buffers[previous_index].cpu().numpy()
-            predictions = outputs[0]
-            predictions = predictions[predictions[:, 4] > 0.7]
-            current_time = time.perf_counter()
-            self._fps = 1 / (current_time - prev_time)
-            self._inference_data = PredictionResult(predictions=predictions, frame=frame) # TODO: надо передавать предыдущий кадр
-            prev_time = current_time
-            t1 = time.perf_counter()
-            print(f"inference: {(t1 - t0) * 1000:.2f}ms")
-
-    def _display_loop(self):
-        """Отображает найденные объекты."""
-        while self._inference_data.predictions is None:
-            print("Ожидание предсказания модели!")
-            time.sleep(0.6)
-
-        while self._running:
-            # print(id(self._inference_data))
-            predictions, frame = self._inference_data.predictions, self._inference_data.frame
-            # t0 = time.perf_counter()
-
-            for predict in predictions: # type: ignore
-                x1, y1, x2, y2 = (
-                    self._converter.calculate_reverse_coordinates(predict)
-                )
-
-                cv2.rectangle(
-                    frame,
-                    (x1, y1),
-                    (x2, y2),
-                    (255, 255, 0),
-                    2
-                )
-
-            frame = cv2.resize(frame, (1280, 720))
-            display = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            cv2.putText(
-                img=display,
-                text=f"FPS: {self._fps:.1f}",
-                org=(10, 30),
-                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                fontScale=0.75,
-                color=(0, 255, 255),
-                thickness=2,
-            )
-            cv2.imshow("Detection", display)
-
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                cv2.destroyAllWindows()
-                self._running = False
-                self._camera.stop()
-                break
-
-            # t1 = time.perf_counter()
-            # print(f"display: {(t1 - t0) * 1000:.2f}ms")
+        self._engine_path: str = engine_path
+        self._running: bool = False
+        self._camera: Optional["DXCamera"] = None
+        self._execution_contexts: list = []
+        self._device_input_buffers: list = []
+        self._device_output_buffers: list = []
+        self._cuda_streams: list = []
+        self._captured_frame: Optional[np.ndarray] = None
+        self._preprocessed_frame: Optional["PreprocessedFrame"] = None
+        self._inference_data: Optional["PredictionResult"] = None
+        self._fps: float = 1.0
+        self._converter: Optional["ImageConverter"] = None
+        self._host_input_buffers: list = []
+        self._cuda_events: list = []
+        self._pipeline_fps: list[float] = [0.0, 0.0, 0.0, 0.0]
+        self._new_inference_event = Event()
 
     def _initialize_pipline(self):
         """Задаёт начальные настройки перед запуском основного пайплайна."""
         self._running = True
-        self._camera = dxcam.create(output_idx=0)
+        self._camera = create(output_idx=0)
         self._camera.start(target_fps=240)
 
         monitor_height = 1920
@@ -207,12 +100,6 @@ class TensorRTDetector:
         prediction_data_count = 6
         model_output_shape = (batch_size, max_detections_count, prediction_data_count)
         buffer_count = 2 # TODO: сделать произвольное количество буфферов
-        self._execution_contexts = []
-        self._host_input_buffers = []
-        self._device_input_buffers = []
-        self._device_output_buffers = []
-        self._cuda_streams = []
-        self._cuda_events = []
 
         for index in range(buffer_count):
             self._execution_contexts.append(engine.create_execution_context())
@@ -255,6 +142,152 @@ class TensorRTDetector:
 
             self._cuda_streams.append(torch.cuda.Stream())
             self._cuda_events.append(torch.cuda.Event())
+
+    def _capture_loop(self):
+        """Получает кадры с экрана."""
+        prev_time = 2
+
+        while self._running:
+            # t0 = time.perf_counter()
+            frame = self._camera.grab()
+            # frame = self.camera.get_latest_frame()
+
+            if frame is None:
+                continue
+
+            self._captured_frame = frame
+            current_time = time.perf_counter()
+            self._pipeline_fps[0] = 1 / (current_time - prev_time)
+            prev_time = current_time
+
+            # print(f"capture: {(time.perf_counter() - t0) * 1000:.2f}ms")
+
+    def _preprocess_loop(self):
+        """Подготавливает кадры к входному формату модели."""
+        prev_time = 2
+
+        while self._captured_frame is None:
+            print("Ожидание первого кадра!")
+            time.sleep(0.2)
+
+        while self._running:
+            # t0 = time.perf_counter()
+            frame = self._captured_frame.copy() # type: ignore
+            # подумать над уменьшением байткода, потестить
+            img = self._converter.letterbox(frame)
+            img = img.astype(np.float32)
+            img = img / 255.0
+            img = np.transpose(img, (2, 0, 1))
+            img = np.expand_dims(img, axis=0)
+            self._preprocessed_frame = PreprocessedFrame(frame=frame, batch=img)
+            # print(f"preprocess: {(time.perf_counter() - t0) * 1000:.2f}ms")
+            current_time = time.perf_counter()
+            self._pipeline_fps[1] = 1 / (current_time - prev_time)
+            prev_time = current_time
+
+    def _inference_loop(self):
+        """Находит объекты на кадре."""
+        prev_time = 2
+        buffer_index = 0
+
+        while self._preprocessed_frame is None:
+            print("Ожидание обработанного кадра!")
+            time.sleep(0.4)
+
+        while self._running:
+            # t0 = time.perf_counter()
+            buffer_index = (buffer_index + 1) % 2
+            previous_index = 1 - buffer_index
+            frame, batch = self._preprocessed_frame.frame, self._preprocessed_frame.batch # type: ignore
+
+            self._cuda_events[buffer_index].synchronize()
+            np.copyto(self._host_input_buffers[buffer_index].numpy(), batch)
+            self._device_input_buffers[buffer_index].copy_(
+                self._host_input_buffers[buffer_index],
+                non_blocking=True
+            )
+
+            with torch.cuda.stream(self._cuda_streams[buffer_index]):
+                self._execution_contexts[buffer_index].execute_async_v3(
+                    self._cuda_streams[buffer_index].cuda_stream
+                )
+                self._cuda_events[buffer_index].record(self._cuda_streams[buffer_index])
+
+            self._cuda_events[previous_index].synchronize()
+            outputs = self._device_output_buffers[previous_index].cpu().numpy()
+            predictions = outputs[0]
+            predictions = predictions[predictions[:, 4] > 0.7]
+            current_time = time.perf_counter()
+            # self._fps = 1 / (current_time - prev_time)
+            self._pipeline_fps[2] = 1 / (current_time - prev_time)
+            self._inference_data = PredictionResult(predictions=predictions, frame=frame) # TODO: надо передавать предыдущий кадр
+            prev_time = current_time
+            # print(f"inference: {(time.perf_counter() - t0) * 1000:.2f}ms")
+
+    def _display_loop(self):
+        """Отображает найденные объекты."""
+        prev_time = 2
+
+        while self._inference_data is None:
+            print("Ожидание предсказания модели!")
+            time.sleep(0.6)
+
+        while self._running:
+            # t0 = time.perf_counter()
+            predictions, frame = self._inference_data.predictions, self._inference_data.frame
+
+            for predict in predictions: # type: ignore
+                x1, y1, x2, y2 = (
+                    self._converter.calculate_reverse_coordinates(predict)
+                )
+
+                cv2.rectangle(
+                    frame,
+                    (x1, y1),
+                    (x2, y2),
+                    (255, 255, 0),
+                    2
+                )
+
+            frame = cv2.resize(frame, (1280, 720))
+
+            display = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            # t4 = time.perf_counter()
+            cv2.putText(
+                img=display,
+                # text=f"FPS: {self._fps:.1f}",
+                text=f"FPS: {min(self._pipeline_fps):.1f}",
+                org=(10, 30),
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                fontScale=0.75,
+                color=(0, 255, 255),
+                thickness=2,
+            )
+            # t5 = time.perf_counter()
+            cv2.imshow("Detection", display)
+            # t6 = time.perf_counter()
+
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                cv2.destroyAllWindows()
+                self._running = False
+                self._camera.stop()
+                break
+
+            current_time = time.perf_counter()
+            self._pipeline_fps[3] = 1 / (current_time - prev_time)
+            prev_time = current_time
+            print(min(self._pipeline_fps))
+            print(self._pipeline_fps)
+            # print(
+            #     # f"write: {(t1 - t0) * 1000:.2f}ms, "
+            #     # f"rectangle: {(t2 - t1) * 1000:.2f}ms, "
+            #     # f"resize: {(t3 - t2) * 1000:.2f}ms, "
+            #     # f"cvt: {(t4 - t3) * 1000:.2f}ms, "
+            #     f"put: {(t5 - t0) * 1000:.2f}ms, "
+            #     f"imshow: {(t6 - t5) * 1000:.2f}ms, "
+            #     f"key_wait: {(time.perf_counter() - t6) * 1000:.2f}ms, "
+            #     f"all: {(time.perf_counter() - t0) * 1000:.2f}ms, "
+            # )
 
     def _enable_threads(self):
         """Запускает потоки всего пайплана."""

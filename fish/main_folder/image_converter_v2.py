@@ -1,5 +1,5 @@
 import cv2
-from functools import cached_property
+from numpy import ndarray
 from typing import Optional
 
 
@@ -10,28 +10,28 @@ class ImageConverter:
             converted_shape: tuple[int,int] = (),
             padding_color: Optional[tuple[int, int, int]] = (114, 114, 114)
     ):
-        self._padding_color = padding_color
-        self._shape_checked = False
+        self._padding_color: tuple[int, int, int] = padding_color
+        self._shape_checked: bool = False
         self._width, self._height = original_shape
         self._new_width, self._new_height = converted_shape
-        self._scale = min(self._new_width / self._width, self._new_height / self._height)
-        self._resized_width = int(round(self._width * self._scale))
-        self._resized_height = int(round(self._height * self._scale))
-        self._padding_width = self._new_width - self._resized_width
-        self._padding_height = self._new_height - self._resized_height
-        self._top = int(round(self._padding_height / 2 - 0.1))
-        self._bottom = int(round(self._padding_height / 2 + 0.1))
-        self._left = int(round(self._padding_width / 2 - 0.1))
-        self._right = int(round(self._padding_width / 2 + 0.1))
+        self._scale: float = min(self._new_width / self._width, self._new_height / self._height)
+        self._resized_width: int = int(round(self._width * self._scale))
+        self._resized_height: int = int(round(self._height * self._scale))
+        self._padding_width: int = self._new_width - self._resized_width
+        self._padding_height: int = self._new_height - self._resized_height
+        self._top: int = int(round(self._padding_height / 2 - 0.1))
+        self._bottom: int = int(round(self._padding_height / 2 + 0.1))
+        self._left: int = int(round(self._padding_width / 2 - 0.1))
+        self._right: int = int(round(self._padding_width / 2 + 0.1))
 
-    def letterbox(self, image):
+    def letterbox(self, image: ndarray):
         """Пропорционально изменяет размер изображения и заполняет серым цветом недостающие пиксели."""
         if not self._shape_checked:
             self._shape_checked = True
 
             if not self._is_image_shape_same(image):
                 print(f"Размер изображения не соответствует размеру, заданному при инициализации!")
-                # TODO: self._shape_can_be_dynamic реализовать как-нибудь позже
+                # TODO: self._shape_can_be_dynamic реализовать позже
                 return
 
         image = cv2.resize(
@@ -63,7 +63,7 @@ class ImageConverter:
 
         return int(new_x1), int(new_y1), int(new_x2), int(new_y2)
 
-    def _is_image_shape_same(self, image):
+    def _is_image_shape_same(self, image: ndarray):
         """Проверяет что изображение соответствует размеру заданному при инициализации."""
         height, width = image.shape[:2]
         return bool(height == self._height and width == self._width)
