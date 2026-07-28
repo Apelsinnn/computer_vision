@@ -46,7 +46,6 @@ class TensorRTDetector:
         self._host_input_buffers: list = []
         self._cuda_events: list = []
         self._pipeline_fps: list[float] = [0.0, 0.0, 0.0, 0.0]
-        self._new_inference_event = Event()
 
     def _initialize_pipline(self):
         """Задаёт начальные настройки перед запуском основного пайплайна."""
@@ -173,7 +172,7 @@ class TensorRTDetector:
         while self._running:
             # t0 = time.perf_counter()
             frame = self._captured_frame.copy() # type: ignore
-            # подумать над уменьшением байткода, потестить
+            # TODO: подумать над уменьшением байткода, потестить
             img = self._converter.letterbox(frame)
             img = img.astype(np.float32)
             img = img / 255.0
@@ -234,7 +233,7 @@ class TensorRTDetector:
 
         while self._running:
             # t0 = time.perf_counter()
-            predictions, frame = self._inference_data.predictions, self._inference_data.frame
+            predictions, frame = self._inference_data.predictions, self._inference_data.frame  # type: ignore
 
             for predict in predictions: # type: ignore
                 x1, y1, x2, y2 = (
@@ -250,9 +249,7 @@ class TensorRTDetector:
                 )
 
             frame = cv2.resize(frame, (1280, 720))
-
             display = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            # t4 = time.perf_counter()
             cv2.putText(
                 img=display,
                 # text=f"FPS: {self._fps:.1f}",
@@ -263,9 +260,7 @@ class TensorRTDetector:
                 color=(0, 255, 255),
                 thickness=2,
             )
-            # t5 = time.perf_counter()
             cv2.imshow("Detection", display)
-            # t6 = time.perf_counter()
 
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 cv2.destroyAllWindows()
@@ -276,18 +271,7 @@ class TensorRTDetector:
             current_time = time.perf_counter()
             self._pipeline_fps[3] = 1 / (current_time - prev_time)
             prev_time = current_time
-            print(min(self._pipeline_fps))
             print(self._pipeline_fps)
-            # print(
-            #     # f"write: {(t1 - t0) * 1000:.2f}ms, "
-            #     # f"rectangle: {(t2 - t1) * 1000:.2f}ms, "
-            #     # f"resize: {(t3 - t2) * 1000:.2f}ms, "
-            #     # f"cvt: {(t4 - t3) * 1000:.2f}ms, "
-            #     f"put: {(t5 - t0) * 1000:.2f}ms, "
-            #     f"imshow: {(t6 - t5) * 1000:.2f}ms, "
-            #     f"key_wait: {(time.perf_counter() - t6) * 1000:.2f}ms, "
-            #     f"all: {(time.perf_counter() - t0) * 1000:.2f}ms, "
-            # )
 
     def _enable_threads(self):
         """Запускает потоки всего пайплана."""
