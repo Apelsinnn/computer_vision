@@ -6,3 +6,4 @@ benchmarks.log
 calibration_image_sample_data_20x128x128x3_float32.npy
 fish/main_folder/models/
 fish/main_folder/runs/
+fish/main_folder/video_for_test_inference.mkv
